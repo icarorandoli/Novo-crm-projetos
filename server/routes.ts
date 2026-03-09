@@ -50,6 +50,10 @@ function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfterSec?: nu
   return { allowed: true };
 }
 
+function resetLoginRateLimit(ip: string) {
+  loginAttempts.delete(ip);
+}
+
 setInterval(() => {
   const now = Date.now();
   const keys = Array.from(loginAttempts.keys());
@@ -276,6 +280,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const valid = await comparePasswords(password, user.password);
       if (!valid) return res.status(401).json({ error: "Credenciais inválidas" });
 
+      resetLoginRateLimit(ip);
       req.session.userId = user.id;
       await new Promise<void>((resolve, reject) => req.session.save(e => e ? reject(e) : resolve()));
       const { password: _, ...safeUser } = user;
@@ -365,12 +370,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── MOBILE APP AUTH ───────────────────────────────────────────────────
   app.post("/api/mobile/login", async (req, res) => {
     try {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const rateCheck = checkLoginRateLimit(ip);
+      if (!rateCheck.allowed) {
+        return res.status(429).json({ error: `Muitas tentativas de login. Tente novamente em ${rateCheck.retryAfterSec} segundos.` });
+      }
       const { username, password } = req.body;
       if (!username || !password) return res.status(400).json({ error: "Usuário e senha obrigatórios" });
       const user = await storage.getUserByUsername(username);
       if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
       const valid = await comparePasswords(password, user.password);
       if (!valid) return res.status(401).json({ error: "Credenciais inválidas" });
+      resetLoginRateLimit(ip);
       const token = generateMobileToken();
       mobileTokens.set(token, user.id);
       const { password: _, ...safeUser } = user;
